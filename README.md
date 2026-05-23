@@ -115,6 +115,8 @@ The following files are stored in `PROJECT_DIR`:
 
 The script also expects the following datasets in `/content/drive/MyDrive/datasets/`:
 - `GTZAN.zip`
+- `GiantSteps+.zip`
+- `GiantSteps+.xlsx`
 - `FMA-small.zip`
 - `Ballroom/data1.tar.gz`
 ```

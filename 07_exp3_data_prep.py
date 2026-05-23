@@ -1,11 +1,11 @@
 # ==============================================================================
 # Program Name: 07_exp3_data_prep.py
-# Version: 3.1 (Anti-Disconnect, macOS Ghost Filter, Tar Filter Fix)
-# Version: 3.0 (Anti-Disconnect & Resumable)
+# Version: 3.1 (Anti-Disconnect, macOS Ghost Filter, Tar Filter Fix, Drive-based)
 # Description: Ingestion and feature extraction engine for Experiment 3.
 #              Hardened against Colab "Errno 107" Drive disconnects by copying 
 #              archives to local disk prior to extraction.
-# Dependencies: librosa, numpy, urllib, zipfile, tarfile, shutil
+#              GiantSteps+ dataset is loaded from Google Drive (not downloaded from Zenodo).
+# Dependencies: librosa, numpy, zipfile, tarfile, shutil
 # Outputs:
 # `/content/checkpoints/exp3_features_giantsteps.pkl`
 # `/content/checkpoints/exp3_features_fma.pkl`
@@ -15,7 +15,6 @@
 
 import os
 import sys
-import urllib.request
 import zipfile
 import tarfile
 import shutil
@@ -23,7 +22,6 @@ import librosa
 import numpy as np
 import pickle
 import random
-import ftplib
 
 from google.colab import drive
 drive.mount('/content/drive')
@@ -68,13 +66,6 @@ N_MELS = 128
 CQT_BINS = 84
 
 # --- Helper Functions ---
-def download_url(url, output_path):
-    if not os.path.exists(output_path):
-        print(f"Downloading {url.split('/')[-1]}...")
-        urllib.request.urlretrieve(url, output_path)
-    else:
-        print(f"File already exists: {output_path}")
-
 def is_dir_populated(dir_path):
     return os.path.exists(dir_path) and len(os.listdir(dir_path)) > 0
 
@@ -99,7 +90,7 @@ def extract_features(audio_path):
         return None
 
 # ==============================================================================
-# Phase 1: GiantSteps+ (Automated Zenodo Download)
+# Phase 1: GiantSteps+ (Load from Google Drive, not Zenodo)
 # ==============================================================================
 print("\n=== Phase 1: Preparing GiantSteps+ ===")
 gs_dir = os.path.join(EXP3_DIR, "giantsteps")
@@ -108,13 +99,35 @@ os.makedirs(gs_dir, exist_ok=True)
 gs_audio_zip = os.path.join(gs_dir, "audio.zip")
 gs_meta_xlsx = os.path.join(gs_dir, "GiantSteps+.xlsx")
 
-download_url("https://zenodo.org/records/1095691/files/audio.zip?download=1", gs_audio_zip)
-download_url("https://zenodo.org/records/1095691/files/GiantSteps+.xlsx?download=1", gs_meta_xlsx)
+# Expected files in Drive datasets folder
+GS_ZIP_DRIVE = os.path.join(DRIVE_DIR, "GiantSteps+.zip")
+GS_META_DRIVE = os.path.join(DRIVE_DIR, "GiantSteps+.xlsx")
+
+if os.path.exists(GS_ZIP_DRIVE) and os.path.exists(GS_META_DRIVE):
+    # Copy from Drive to local if not already present
+    if not os.path.exists(gs_audio_zip):
+        print("Copying GiantSteps+ audio from Drive to local disk...")
+        shutil.copy2(GS_ZIP_DRIVE, gs_audio_zip)
+    else:
+        print("GiantSteps+ audio zip already exists locally.")
+    
+    if not os.path.exists(gs_meta_xlsx):
+        print("Copying GiantSteps+ metadata from Drive to local disk...")
+        shutil.copy2(GS_META_DRIVE, gs_meta_xlsx)
+    else:
+        print("GiantSteps+ metadata already exists locally.")
+else:
+    print(f"[WARNING] GiantSteps+ files not found in {DRIVE_DIR}")
+    print("Expected files: GiantSteps+.zip and GiantSteps+.xlsx")
+    print("Skipping GiantSteps+ dataset.")
 
 if not check_for_actual_audio(os.path.join(gs_dir, "audio"), ".mp3"): 
-    print("Extracting GiantSteps+ audio...")
-    with zipfile.ZipFile(gs_audio_zip, 'r') as zip_ref:
-        zip_ref.extractall(gs_dir)
+    if os.path.exists(gs_audio_zip):
+        print("Extracting GiantSteps+ audio from local copy...")
+        with zipfile.ZipFile(gs_audio_zip, 'r') as zip_ref:
+            zip_ref.extractall(gs_dir)
+    else:
+        print("GiantSteps+ audio zip not found. Skipping extraction.")
 else:
     print("GiantSteps+ audio already extracted. Skipping.")
 
