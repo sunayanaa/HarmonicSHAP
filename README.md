@@ -1,122 +1,160 @@
 # HarmonicSHAP: Semantic Coalition Attribution for Explainable Music Genre Classification
-## Sridharan Sankaran (sridharan.sankaran@ieee.org)
+### Sridharan Sankaran (sridharan.sankaran@ieee.org)
 
-This repository contains the complete execution pipeline for the experiments detailed in the manuscript. The codebase is structured sequentially, covering raw data ingestion, feature extraction, model training, baseline comparisons, ablation studies, and generalization robustness testing.
+This repository contains the complete execution pipeline for the experiments described in the manuscript. The codebase covers shared infrastructure, data ingestion, feature extraction, model training, and four experiments spanning baseline attribution comparison, ablation analysis, genre-level attribution profiling, and cross-dataset HAC robustness evaluation.
+
+---
+
+## Core Design Principle
+
+All experiment scripts import from a single shared module (`harmonicshap_core.py`) that centralises the CRNN architecture, semantic masking logic, Shapley attribution computation, and HAC metric evaluation. This ensures consistency across all experiments and eliminates code duplication. The module must be uploaded to Google Drive once before any experiment script is run.
+
+---
+
+## Datasets
+
+| Dataset | Role | Tracks | Clip Length | Source |
+|---------|------|--------|-------------|--------|
+| FMA-Small | Primary training and evaluation (Experiments 1, 2, 3) | 8,000 | 30 s | Defferrard et al., ISMIR 2017 |
+| GiantSteps+ | Cross-dataset HAC robustness (Experiment 4) | 600 | First 30 s of 2-min clips | Knees et al., ISMIR 2015 / Zenodo |
+| Ballroom | Cross-dataset HAC robustness (Experiment 4) | 698 | 30 s | Extended Ballroom dataset |
+| Jamendo | Cross-dataset HAC robustness (Experiment 4) | 200 | 30 s (from offset 30 s) | MTG-Jamendo |
+
+---
 
 ## Execution Pipeline
 
-### Experiment 1: Baselines and Quantitative Metrics
+Scripts must be executed in the order listed. Each script copies its required inputs from Google Drive at startup and saves its outputs to Google Drive for downstream use. All scripts are designed to run in Google Colab with a T4 GPU.
 
-* **`01_exp1_data_prep_and_features.py` (v1.0)**
-* **Description:** Prepares the GTZAN dataset. Extracts the multi-resolution features (Mel Spectrogram, MFCC, CQT, Chroma) required for all baseline models and HarmonicSHAP. Saves processed features as chunked pickle checkpoints to the Google Drive project folder.
+---
 
-* **`02_exp1_train_models.py` (v1.0)**
-* **Description:** Trains the baseline classifiers. Includes an XGBoost model trained on aggregated MFCCs and a lightweight Multi-Branch CRNN trained on Mel, CQT, and Chroma features. Uploads model weights and training histories to the Google Drive project folder.
+### Shared Infrastructure
 
-* **`03_exp1_attributions_and_visualization.py` (v2.0)**
-* **Description:** Generates baseline explanations (Vanilla SHAP, Grad-CAM) and the temporal semantic attribution profile for a sample track. Creates the side-by-side visual comparisons for manuscript figures using an exact 4-player Shapley game for temporal sections. Saves figures to the Google Drive project folder.
+**`harmonicshap_core.py`**
+The shared core module. Contains the `MultiBranchCRNN` architecture, all semantic masking functions, exact Shapley game computation, and HAC metric evaluation. Upload to your Google Drive folder once before running any other script. All subsequent scripts copy it automatically at startup.
 
-* **`04_exp1_quantitative_metrics.py` (v1.0)**
-* **Description:** Computes the full quantitative metrics (Deletion and Insertion AUC) for all baselines (including SHAP-LM and Standard Acoustic SHAP) across 200 samples. Implements state-saving checkpoints to the Google Drive project folder to ensure resumability.
+Key components:
+- `MultiBranchCRNN`: three-branch CNN-GRU classifier (Mel, CQT, Chroma inputs)
+- `extract_track_entities`: extracts beat frames, structural sections, timbral Mel bins, and harmonic CQT/chroma masks for a single track
+- `apply_semantic_mask`: applies player-level time-frequency masking with training-mean baseline
+- `compute_shapley_game`: exact $2^4 = 16$ coalition Shapley computation
+- `compute_hac_for_track`: HAC evaluation with cosine distance and prediction invariance filter
+- `format_tensor`: pads/trims feature arrays and applies optional log1p transform
 
-* **`04_exp1_Wilcoxon_signed-rank_test.py`**
-* **Description:** Conducts the statistical significance testing. Performs a Wilcoxon signed-rank test on the per-sample Deletion AUC values comparing HarmonicSHAP against the Standard Acoustic SHAP baseline.
+---
+
+### Data Preparation and Model Training
+
+**`01_fma_data_prep_and_features.py`** (v2.0, GPU not required)
+Copies FMA-Small audio and metadata from Google Drive, extracts multi-resolution features (Mel, CQT, Chroma, MFCC) for all 8,000 tracks, saves split-labelled chunk files to Google Drive, and computes the training-set per-bin mean baseline used by all masking operations.
+
+**`02_fma_train_models.py`** (v2.2, GPU required)
+Trains the XGBoost MFCC baseline and the `MultiBranchCRNN` on FMA-Small using memory-efficient lazy chunk loading. Applies log1p transform to Mel and CQT features at load time. Recomputes the training-mean baseline with log-transformed features before training begins to ensure the masking baseline matches the inference representation.
+
+---
+
+### Experiment 1: Baseline Attribution Comparison
+
+**`03_exp1_attributions_and_visualization.py`** (v2.0, GPU required)
+Generates the three-panel centerpiece figure comparing Vanilla SHAP on XGBoost MFCC features, Grad-CAM acoustic saliency, and the HarmonicSHAP temporal semantic attribution profile for a representative correctly-classified FMA-Small track.
+
+**`04_exp1_quantitative_metrics.py`** (v2.0, GPU required)
+Computes Deletion AUC and Insertion AUC for all four attribution methods across 200 FMA-Small training samples. Implements checkpoint-and-resume via Google Drive every 5 samples. Runs the Wilcoxon signed-rank test comparing HarmonicSHAP against Standard Acoustic SHAP on per-sample Deletion AUC.
+
+---
 
 ### Experiment 2: Ablation Study
 
-* **`05_exp2_ablation.py` (v3.0)**
-* **Description:** Isolates the impact of the semantic and structural groupings. Computes Harmonic Attribution Consistency (HAC), Deletion AUC, and Insertion AUC across five architectural ablations. Implements deterministic sampling and calculates standard errors for rigorous evaluation. Results saved to Google Drive.
+**`05_exp2_ablation.py`** (v2.0, GPU required)
+Evaluates the contribution of each semantic player by computing HAC, Deletion AUC, and Insertion AUC across six configurations: full HarmonicSHAP, Ablation-H, Ablation-R, Ablation-T, Ablation-CQT, and Ablation-Flat. Uses 100 fixed FMA-Small samples with deterministic seeding. Handles degenerate conditions (where model confidence collapses below 0.05) transparently by reporting N/A rather than suppressing the result. Checkpoint-and-resume every 5 samples.
 
-* **`06_exp2_diagnostics.py` (v1.0)**
-* **Description:** Diagnoses boundary conditions identified during the ablation study. Prints per-sample HAC comparisons and plots raw Deletion Confidence curves to empirically demonstrate the baseline CRNN confidence collapse (model dependency finding) when the Harmonic or CQT inputs are ablated, justifying the metric exclusions in the manuscript.
+---
 
-### Experiment 3: Generalization and HAC Robustness
+### Experiment 3: Genre-Level Attribution Profiles
 
-* **`07_exp3_data_prep.py` (v3.1)**
-* **Description:** Ingestion engine for unseen datasets (GiantSteps+, FMA-Small, Ballroom). Hardened against remote session disconnects via local caching and incremental saving. Automatically handles macOS ghost files and `.tar` extractions, outputting standardized feature checkpoints saved to Google Drive.
+**`09_genre_attribution_profiles.py`** (v1.0, GPU required)
+Computes full-track mean Shapley attribution profiles for all 8 FMA-Small genres using up to 50 correctly-classified tracks per genre. Generates an 8×4 heatmap showing mean Shapley values per genre-player combination using a diverging colormap centered at zero. Green cells indicate players that increase genre confidence; orange/red cells indicate players that suppress it.
 
-* **`08_exp3_generalization.py` (v1.0)**
-* **Description:** Conducts the core robustness study. Subjects the unseen datasets to musically meaning-preserving transformations, specifically pitch transpositions ($\pm2$, $\pm4$ semitones) and tempo perturbations ($\pm10\%$), calculating the resulting HAC to evaluate the stability of the semantic hierarchy at scale. Results saved to Google Drive.
+---
 
-## Program Outputs Cross-Reference
+### Experiment 4: HAC Robustness Study
 
-| Program | Output Files | Storage Location |
-|---------|--------------|------------------|
-| **`01_exp1_data_prep_and_features.py`** | `gtzan_features_chunk_N.pkl` (multiple chunks) | `PROJECT_DIR/` |
-| | `fig_01_01_sample_multires_features.png` | `PROJECT_DIR/` |
-| **`02_exp1_train_models.py`** | `xgboost_baseline.json` | `PROJECT_DIR/` |
-| | `crnn_backbone_weights.pth` | `PROJECT_DIR/` |
-| | `label_encoder.pkl` | `PROJECT_DIR/` |
-| | `fig_02_01_crnn_training_history.png` | `PROJECT_DIR/` |
-| **`03_exp1_attributions_and_visualization.py`** | `fig_03_01_attribution_comparison.png` | `PROJECT_DIR/` |
-| **`04_exp1_quantitative_metrics.py`** | `exp1_quantitative_results.json` | `PROJECT_DIR/` |
-| | `exp1_metrics_state.pkl` (checkpoint) | `PROJECT_DIR/` |
-| **`04_exp1_Wilcoxon_signed-rank_test.py`** | `wilcoxon_results.txt` (or similar) | `PROJECT_DIR/` |
-| **`05_exp2_ablation.py`** | `exp2_ablation_results.json` | `PROJECT_DIR/` |
-| **`06_exp2_diagnostics.py`** | `diag_curves.png` | `PROJECT_DIR/` |
-| **`07_exp3_data_prep.py`** | `exp3_features_giantsteps.pkl` | `PROJECT_DIR/` |
-| | `exp3_features_fma.pkl` | `PROJECT_DIR/` |
-| | `exp3_features_ballroom.pkl` | `PROJECT_DIR/` |
-| **`08_exp3_generalization.py`** | `exp3_generalization_results.json` | `PROJECT_DIR/` |
+**`07_exp3_data_prep.py`** (v2.0, GPU not required)
+Extracts features from GiantSteps+, Ballroom, and Jamendo from Google Drive. FMA-Small features are already on Google Drive from script 01 and are not re-extracted. Handles archive extraction, macOS ghost file filtering, and fallback paths automatically.
 
-### Input Dependencies (Files Required by Downstream Scripts)
+**`08_exp3_generalization.py`** (v2.0, GPU required)
+Applies pitch transpositions (±2, ±4 semitones) and tempo perturbations (±10%) to all four datasets and computes HAC for each transformation. Pitch transposition uses semitone-accurate CQT bin shifting. Tempo perturbation uses feature-level bilinear interpolation (see Limitations in the manuscript). Only track-transformation pairs where the model's predicted class is unchanged are included (prediction invariance filter). Checkpoint-and-resume every 10 tracks.
 
-| Required File | Generated By | Used By |
-|---------------|--------------|---------|
-| `gtzan_features_chunk_*.pkl` | `01_exp1_data_prep_and_features.py` | `02_exp1_train_models.py`, `03_exp1_attributions_and_visualization.py`, `04_exp1_quantitative_metrics.py`, `05_exp2_ablation.py`, `06_exp2_diagnostics.py` |
-| `xgboost_baseline.json` | `02_exp1_train_models.py` | `03_exp1_attributions_and_visualization.py`, `04_exp1_quantitative_metrics.py` |
-| `crnn_backbone_weights.pth` | `02_exp1_train_models.py` | `03_exp1_attributions_and_visualization.py`, `04_exp1_quantitative_metrics.py`, `05_exp2_ablation.py`, `06_exp2_diagnostics.py`, `08_exp3_generalization.py` |
-| `label_encoder.pkl` | `02_exp1_train_models.py` | `03_exp1_attributions_and_visualization.py`, `04_exp1_quantitative_metrics.py`, `05_exp2_ablation.py`, `06_exp2_diagnostics.py`, `08_exp3_generalization.py` |
-| `exp3_features_*.pkl` | `07_exp3_data_prep.py` | `08_exp3_generalization.py` |
+---
 
-### Execution Order
+## Script Input/Output Table
 
-For a complete run of all experiments, execute the scripts in the following order:
+| Script | GPU | Inputs | Outputs |
+|--------|-----|--------|---------|
+| `harmonicshap_core.py` | No | — | Upload to Google Drive once |
+| `01_fma_data_prep_and_features.py` | No | FMA-Small audio + metadata (Google Drive) | `fma_features_train_chunk_N.pkl`, `fma_features_validation.pkl`, `fma_features_test.pkl`, `fma_training_baseline.pkl`, `label_encoder.pkl` |
+| `02_fma_train_models.py` | Yes | `fma_features_train_chunk_N.pkl`, `fma_features_validation.pkl`, `fma_features_test.pkl`, `label_encoder.pkl` | `crnn_backbone_weights.pth`, `xgboost_baseline.json`, `fma_training_baseline.pkl` (log-transformed), `training_log.json` |
+| `03_exp1_attributions_and_visualization.py` | Yes | `fma_features_train_chunk_1.pkl`, `crnn_backbone_weights.pth`, `xgboost_baseline.json`, `fma_training_baseline.pkl`, `label_encoder.pkl` | `fig_03_01_attribution_comparison.png` |
+| `04_exp1_quantitative_metrics.py` | Yes | `fma_features_train_chunk_1.pkl`, `crnn_backbone_weights.pth`, `xgboost_baseline.json`, `fma_training_baseline.pkl`, `label_encoder.pkl` | `exp1_quantitative_results.json`, `exp1_metrics_state.pkl` |
+| `05_exp2_ablation.py` | Yes | `fma_features_train_chunk_1.pkl`, `crnn_backbone_weights.pth`, `fma_training_baseline.pkl`, `label_encoder.pkl` | `exp2_ablation_results.json`, `exp2_ablation_state.pkl` |
+| `09_genre_attribution_profiles.py` | Yes | `fma_features_train_chunk_N.pkl` (all), `crnn_backbone_weights.pth`, `fma_training_baseline.pkl`, `label_encoder.pkl` | `fig_09_genre_attribution_heatmap.png`, `exp_genre_attribution_profiles.json` |
+| `07_exp3_data_prep.py` | No | GiantSteps+ `audio.zip`, Ballroom `data1/2.tar.gz`, Jamendo `wav_24/` (all Google Drive) | `exp3_features_giantsteps.pkl`, `exp3_features_ballroom.pkl`, `exp3_features_jamendo.pkl` |
+| `08_exp3_generalization.py` | Yes | `exp3_features_giantsteps.pkl`, `exp3_features_ballroom.pkl`, `exp3_features_jamendo.pkl`, `fma_features_validation.pkl`, `crnn_backbone_weights.pth`, `fma_training_baseline.pkl`, `label_encoder.pkl` | `exp3_generalization_results.json`, `exp3_state.pkl` |
 
-1. `01_exp1_data_prep_and_features.py` — Extract GTZAN features
-2. `02_exp1_train_models.py` — Train baseline models
-3. `03_exp1_attributions_and_visualization.py` — Generate centerpiece figure
-4. `04_exp1_quantitative_metrics.py` — Compute Deletion/Insertion AUC
-5. `04_exp1_Wilcoxon_signed-rank_test.py` — Statistical significance
-6. `05_exp2_ablation.py` — Run ablation study
-7. `06_exp2_diagnostics.py` — Diagnostic plots (optional)
-8. `07_exp3_data_prep.py` — Prepare external datasets
-9. `08_exp3_generalization.py` — Run generalization robustness study
-
-```
-
-**Summary of the table content:**
-
-| Section | Description |
-|---------|-------------|
-| **Program Outputs Cross-Reference** | Lists every output file produced by each script and where it is stored (`PROJECT_DIR/` = Google Drive project folder) |
-| **Input Dependencies** | Shows which files are required by downstream scripts and which scripts generate them |
-| **Execution Order** | Provides the recommended sequence for running all experiments from start to finish |
+---
 
 ## Hardware and Dependencies
 
-* **GPU Requirement:** A GPU environment (e.g., Google Colab T4/V100) is highly recommended for PyTorch CRNN training and deep Shapley value computations.
-* **Core Libraries:** `torch`, `shap`, `librosa`, `xgboost`, `scikit-learn`, `scipy`, `numpy`, `matplotlib`, `cv2`.
+**GPU:** Required for scripts 02, 03, 04, 05, 08, 09. Google Colab T4 used throughout.
 
-## Storage Configuration
+**Storage:** Google Drive at `/content/drive/MyDrive/paper/HarmonicSHAP/` for feature files, checkpoints, and outputs. Google Drive at `/content/drive/MyDrive/datasets/` for raw audio archives.
 
-All scripts use Google Drive as the persistent storage layer. The project expects the following configuration:
+**Core libraries:** `torch`, `librosa`, `shap`, `xgboost`, `scikit-learn`, `scipy`, `numpy`, `matplotlib`, `cv2`
 
-```python
-PROJECT_DIR = "/content/drive/MyDrive/paper/harmonic-SHAP/"
-```
+**Feature extraction constants** (defined in `harmonicshap_core.py` and shared across all scripts):
 
-The following files are stored in `PROJECT_DIR`:
-- Model weights (`crnn_backbone_weights.pth`, `xgboost_baseline.json`)
-- Label encoder (`label_encoder.pkl`)
-- Feature checkpoints (`gtzan_features_chunk_*.pkl`, `exp3_features_*.pkl`)
-- Results JSON files (`exp1_quantitative_results.json`, `exp2_ablation_results.json`, `exp3_generalization_results.json`)
-- Visualization figures (`fig_*.png`)
+| Parameter | Value |
+|-----------|-------|
+| Sample rate | 22,050 Hz |
+| Hop length | 512 |
+| Mel bins | 128 |
+| CQT bins | 168 (7 octaves × 24 bins/octave) |
+| Chroma bins | 12 |
+| Target frames | 1,290 (≈ 30 s) |
+| GRU input size | 2,464 |
+| Timbral Mel bins suppressed | 48 |
+| Top pitch classes per frame | 3 |
 
-The script also expects the following datasets in `/content/drive/MyDrive/datasets/`:
-- `GTZAN.zip`
-- `GiantSteps+.zip`
-- `GiantSteps+.xlsx`
-- `FMA-small.zip`
-- `Ballroom/data1.tar.gz`
-```
+---
+
+## Semantic Coalition Design
+
+HarmonicSHAP defines four coalition players extracted from a multi-resolution signal decomposition:
+
+| Player | Symbol | Extraction Method | Masking Operation |
+|--------|--------|-------------------|-------------------|
+| Harmonic | $H$ | CQT-to-chroma projection; top-3 pitch classes per frame mapped to CQT bin indices | Suppress chord-active CQT and chroma bins at each time frame |
+| Rhythmic | $R$ | Beat positions via `librosa.beat.beat_track` | Suppress all frequency bins at beat-aligned frames |
+| Timbral | $T$ | $k$-means ($k=4$) on MFCC frames; dominant cluster centroid projected via IDCT | Suppress 48 characteristic Mel frequency bands |
+| Structural | $S$ | Foote-style novelty segmentation on CQT self-similarity matrix | Suppress all frequency bins in the most genre-diagnostic section |
+
+All masking operations replace suppressed regions with the training-set per-bin mean rather than silence.
+
+---
+
+## Key Results
+
+| Experiment | Key Finding |
+|------------|-------------|
+| 1 — Baseline Comparison | Complementary faithfulness profile: HarmonicSHAP achieves best Insertion AUC (0.5510); Standard Acoustic SHAP achieves best Deletion AUC (0.2085). Both differences statistically significant ($W=4194$, $p<0.0001$). |
+| 2 — Ablation Study | Every ablation degrades Insertion AUC from full HarmonicSHAP (0.5895). CQT removal causes the largest single degradation (0.4176), independently validating the CQT-centric design. |
+| 3 — Genre Profiles | Genre-differentiated attribution patterns consistent with music-theoretic expectations: Instrumental identified via Harmonic; Electronic via Rhythmic; Hip-Hop and International via Structural. |
+| 4 — HAC Robustness | Pitch HAC 0.853–0.930 across four datasets with graceful degradation as transposition magnitude increases. Generalises to Jamendo, which shares no genre label correspondence with the training taxonomy. |
+
+---
+
+## Reproducibility
+
+All random seeds are fixed at `SEED=42` across numpy, torch, and Python's random module. Deterministic seeded subsampling from sorted track key lists ensures identical sample sets across reruns. Checkpoint files on Google Drive enable resume from any interruption point without data loss.
+
+The tempo perturbation in Experiment 4 is approximated via feature-level bilinear interpolation rather than audio-level time stretching, since raw audio is not stored in the feature pickle files. This approximation and its boundary conditions are discussed in the manuscript's Limitations section.
